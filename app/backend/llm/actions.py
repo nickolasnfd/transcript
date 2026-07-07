@@ -48,7 +48,9 @@ async def run_action(
     parts = _chunks(transcript)
     total = len(parts)
     for i, part in enumerate(parts, start=1):
-        content = part if total == 1 else CHUNK_PROMPT.format(part=i, total=total, chunk=part)
+        content = (
+            part if total == 1 else CHUNK_PROMPT.format(part=i, total=total, chunk=part)
+        )
         prompt = template.replace("{transcript}", content)
         if total > 1 and i > 1:
             yield f"\n\n---\n*Parte {i} de {total}*\n\n"
@@ -72,6 +74,10 @@ async def run_chat(
         context = f"{head}\n\n[... trecho central omitido por limite de contexto ...]\n\n{tail}"
 
     system = load_prompt("chat_system").replace("{transcript}", context)
-    messages = [{"role": "system", "content": system}, *history, {"role": "user", "content": question}]
+    messages = [
+        {"role": "system", "content": system},
+        *history,
+        {"role": "user", "content": question},
+    ]
     async for token in chat_stream(messages, model):
         yield token

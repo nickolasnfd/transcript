@@ -44,6 +44,11 @@ def check_gpu() -> dict[str, Any]:
 
         available = torch.cuda.is_available()
         name = torch.cuda.get_device_name(0) if available else None
-        return {"ok": True, "cuda": available, "device": settings.resolved_device, "name": name}
+        return {
+            "ok": True,
+            "cuda": available,
+            "device": settings.resolved_device,
+            "name": name,
+        }
     except Exception as exc:
         return {"ok": False, "cuda": False, "device": "cpu", "detail": str(exc)}

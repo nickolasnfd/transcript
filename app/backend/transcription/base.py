@@ -36,4 +36,4 @@ class Transcriber(ABC):
         language: Optional[str] = None,
         on_progress: Optional[ProgressCallback] = None,
     ) -> TranscriptResult:
-        ...
+        """Transcreve o áudio e retorna texto + segmentos com timestamps."""

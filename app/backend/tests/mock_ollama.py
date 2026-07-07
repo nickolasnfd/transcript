@@ -24,7 +24,11 @@ async def tags():
 async def chat(request: Request):
     body = await request.json()
     last_user = next(
-        (m["content"] for m in reversed(body.get("messages", [])) if m["role"] == "user"),
+        (
+            m["content"]
+            for m in reversed(body.get("messages", []))
+            if m["role"] == "user"
+        ),
         "",
     )
     # Resposta determinística que ecoa um trecho do prompt (útil para asserts)
@@ -32,9 +36,13 @@ async def chat(request: Request):
 
     async def stream():
         for word in reply.split(" "):
-            yield json.dumps({"message": {"role": "assistant", "content": word + " "}}) + "\n"
+            yield json.dumps(
+                {"message": {"role": "assistant", "content": word + " "}}
+            ) + "\n"
             await asyncio.sleep(0.02)
-        yield json.dumps({"message": {"role": "assistant", "content": ""}, "done": True}) + "\n"
+        yield json.dumps(
+            {"message": {"role": "assistant", "content": ""}, "done": True}
+        ) + "\n"
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
 

@@ -156,9 +156,7 @@ class JobManager:
                 return
             job.updated.clear()
             # Espera a próxima mudança sem bloquear o event loop
-            await asyncio.get_event_loop().run_in_executor(
-                None, job.updated.wait, 1.0
-            )
+            await asyncio.get_event_loop().run_in_executor(None, job.updated.wait, 1.0)
 
 
 job_manager = JobManager()

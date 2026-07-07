@@ -15,7 +15,9 @@ _WRITERS = {
 SUPPORTED_FORMATS = tuple(_WRITERS)
 
 
-def export_transcript(text: str, segments_json: str, language: str | None, fmt: str) -> tuple[str, str]:
+def export_transcript(
+    text: str, segments_json: str, language: str | None, fmt: str
+) -> tuple[str, str]:
     """Gera o conteúdo exportado em memória. Retorna (conteúdo, media_type)."""
     if fmt not in _WRITERS:
         raise ValueError(f"Formato não suportado: {fmt}")

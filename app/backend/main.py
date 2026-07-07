@@ -97,7 +97,9 @@ async def create_transcription(
     # Aceita nomes conhecidos ou um caminho para checkpoint .pt (modelos fine-tunados)
     is_checkpoint = model.endswith(".pt") and Path(model).is_file()
     if model not in VALID_MODELS and not is_checkpoint:
-        raise HTTPException(422, f"Modelo inválido: {model}. Use um de {sorted(VALID_MODELS)}")
+        raise HTTPException(
+            422, f"Modelo inválido: {model}. Use um de {sorted(VALID_MODELS)}"
+        )
 
     filename = _safe_filename(file.filename or "audio")
     if Path(filename).suffix.lower() not in ALLOWED_EXTENSIONS:
@@ -180,7 +182,9 @@ async def delete_transcription(transcription_id: int):
 @app.get("/api/transcriptions/{transcription_id}/export")
 async def export_transcription(transcription_id: int, format: str = Query(...)):
     if format not in SUPPORTED_FORMATS:
-        raise HTTPException(422, f"Formato inválido. Use: {', '.join(SUPPORTED_FORMATS)}")
+        raise HTTPException(
+            422, f"Formato inválido. Use: {', '.join(SUPPORTED_FORMATS)}"
+        )
     with get_conn() as conn:
         row = conn.execute(
             "SELECT * FROM transcriptions WHERE id = ?", (transcription_id,)
@@ -220,6 +224,7 @@ async def get_audio(transcription_id: int):
 # LLM (Ollama)
 # ---------------------------------------------------------------------------
 
+
 def _get_transcript_text(transcription_id: int) -> str:
     with get_conn() as conn:
         row = conn.execute(
@@ -233,7 +238,9 @@ def _get_transcript_text(transcription_id: int) -> str:
     return row["text"]
 
 
-def _save_llm_result(transcription_id: int, action: str, model: str | None, output: str) -> None:
+def _save_llm_result(
+    transcription_id: int, action: str, model: str | None, output: str
+) -> None:
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO llm_results (transcription_id, action, model, output)"
@@ -303,7 +310,9 @@ async def llm_chat(transcription_id: int, req: ChatRequest):
     async def generate():
         collected: list[str] = []
         try:
-            async for token in llm_actions.run_chat(text, history, req.message, req.model):
+            async for token in llm_actions.run_chat(
+                text, history, req.message, req.model
+            ):
                 collected.append(token)
                 yield token
         except OllamaOfflineError as exc:
@@ -364,3 +373,12 @@ async def job_progress(websocket: WebSocket, job_id: str):
             await websocket.send_json(snapshot)
     finally:
         await websocket.close()
+
+
+# Serve o frontend buildado (modo Docker / produção local).
+# Em desenvolvimento use o Vite (npm run dev) que proxya /api e /ws.
+_frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if _frontend_dist.is_dir():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/", StaticFiles(directory=_frontend_dist, html=True), name="frontend")

@@ -9,3 +9,11 @@ thumbs.db
 .DS_Store
 .idea
 
+# App local de transcrição
+data/
+.env
+.venv/
+venv/
+node_modules/
+app/frontend/dist/
+

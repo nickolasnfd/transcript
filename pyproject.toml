@@ -52,3 +52,9 @@ profile = "black"
 include_trailing_comma = true
 line_length = 88
 multi_line_output = 3
+
+[tool.pytest.ini_options]
+# Restringe a descoberta padrão do pytest à suíte original do Whisper.
+# Os testes do app local ficam em app/backend/tests/ e rodam à parte
+# (veja o README), pois dependem de fastapi/httpx não instalados aqui.
+testpaths = ["tests"]

@@ -183,3 +183,27 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   color: var(--text);
   font-size: 0.95rem;
 }
+
+/* Histórico */
+.history-list { display: flex; flex-direction: column; gap: 4px; max-height: 340px; overflow-y: auto; }
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.history-item:hover { background: var(--accent-soft); }
+.history-item.selected { border-color: var(--accent); background: var(--accent-soft); }
+.history-main { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.history-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.status { font-size: 0.75rem; padding: 3px 8px; border-radius: 20px; white-space: nowrap; }
+.status-done { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+.status-error { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+.status-queued, .status-transcribing { background: var(--accent-soft); color: var(--accent); }
+
+button.delete { border: none; background: none; padding: 4px 6px; font-size: 1rem; }
+button.delete:hover { transform: scale(1.15); }

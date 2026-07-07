@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from './api'
+import { HistoryCard } from './components/HistoryCard'
 import { LLMPanel } from './components/LLMPanel'
 import { ProgressCard } from './components/ProgressCard'
 import { TranscriptView } from './components/TranscriptView'
@@ -12,6 +13,7 @@ export default function App() {
   const [job, setJob] = useState<JobCreated | null>(null)
   const [transcript, setTranscript] = useState<TranscriptionDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [historyKey, setHistoryKey] = useState(0)
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => setHealth(null))
@@ -23,6 +25,7 @@ export default function App() {
       .then((t) => {
         setTranscript(t)
         setJob(null)
+        setHistoryKey((k) => k + 1)
       })
       .catch((e) => setError((e as Error).message))
   }, [])
@@ -57,6 +60,16 @@ export default function App() {
 
         {job && <ProgressCard job={job} onDone={openTranscription} />}
         {error && <p className="error">{error}</p>}
+
+        <HistoryCard
+          refreshKey={historyKey}
+          selectedId={transcript?.id ?? null}
+          onOpen={openTranscription}
+          onDeleted={(id) => {
+            if (transcript?.id === id) setTranscript(null)
+          }}
+        />
+
         {transcript && <TranscriptView transcript={transcript} />}
         {transcript && transcript.status === 'done' && (
           <LLMPanel

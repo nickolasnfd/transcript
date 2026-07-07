@@ -1,14 +1,31 @@
 """FastAPI app + rotas do app de transcrição local."""
 
+import json
+import re
+import unicodedata
+import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 
 from . import health
 from .config import settings
-from .db import init_db
-from .models import HealthStatus
+from .db import get_conn, init_db
+from .export.writers import SUPPORTED_FORMATS, export_transcript
+from .models import (
+    HealthStatus,
+    JobCreated,
+    Segment,
+    TranscriptionDetail,
+    TranscriptionSummary,
+)
+from .transcription.jobs import job_manager
+
+ALLOWED_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".mp4", ".webm"}
+VALID_MODELS = {"tiny", "base", "small", "medium", "large", "turbo"}
 
 
 @asynccontextmanager
@@ -29,6 +46,28 @@ app.add_middleware(
 )
 
 
+def _safe_filename(name: str) -> str:
+    base = unicodedata.normalize("NFKD", Path(name).name)
+    base = re.sub(r"[^\w.\-]+", "_", base)
+    return base or "audio"
+
+
+def _row_to_detail(row) -> TranscriptionDetail:
+    segments = [Segment(**s) for s in json.loads(row["segments_json"] or "[]")]
+    return TranscriptionDetail(
+        id=row["id"],
+        filename=row["filename"],
+        created_at=row["created_at"],
+        duration=row["duration"],
+        language=row["language"],
+        model=row["model"],
+        status=row["status"],
+        text=row["text"],
+        error=row["error"],
+        segments=segments,
+    )
+
+
 @app.get("/api/health", response_model=HealthStatus)
 async def get_health():
     ffmpeg = health.check_ffmpeg()
@@ -42,3 +81,147 @@ async def get_health():
         whisper_model=settings.whisper_model,
         ollama_model=settings.ollama_model,
     )
+
+
+@app.post("/api/transcriptions", response_model=JobCreated)
+async def create_transcription(
+    file: UploadFile = File(...),
+    model: str = Form(default=None),
+    language: str = Form(default=None),
+):
+    model = model or settings.whisper_model
+    # Aceita nomes conhecidos ou um caminho para checkpoint .pt (modelos fine-tunados)
+    is_checkpoint = model.endswith(".pt") and Path(model).is_file()
+    if model not in VALID_MODELS and not is_checkpoint:
+        raise HTTPException(422, f"Modelo inválido: {model}. Use um de {sorted(VALID_MODELS)}")
+
+    filename = _safe_filename(file.filename or "audio")
+    if Path(filename).suffix.lower() not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            422,
+            f"Formato não suportado: {Path(filename).suffix or '(sem extensão)'}. "
+            f"Aceitos: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
+        )
+
+    dest = settings.audio_dir / f"{uuid.uuid4().hex[:8]}_{filename}"
+    with dest.open("wb") as out:
+        while chunk := await file.read(1024 * 1024):
+            out.write(chunk)
+
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO transcriptions (filename, filepath, model, language, status)"
+            " VALUES (?, ?, ?, ?, 'queued')",
+            (filename, str(dest), model, language),
+        )
+        transcription_id = cur.lastrowid
+
+    job = job_manager.enqueue(transcription_id, str(dest), model, language)
+    return JobCreated(job_id=job.job_id, transcription_id=transcription_id)
+
+
+@app.get("/api/transcriptions", response_model=list[TranscriptionSummary])
+async def list_transcriptions(q: str | None = Query(default=None)):
+    with get_conn() as conn:
+        if q:
+            rows = conn.execute(
+                """
+                SELECT t.id, t.filename, t.created_at, t.duration, t.language,
+                       t.model, t.status
+                FROM transcriptions_fts f
+                JOIN transcriptions t ON t.id = f.rowid
+                WHERE transcriptions_fts MATCH ?
+                ORDER BY rank
+                """,
+                (q,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, filename, created_at, duration, language, model, status"
+                " FROM transcriptions ORDER BY id DESC"
+            ).fetchall()
+    return [TranscriptionSummary(**dict(row)) for row in rows]
+
+
+@app.get("/api/transcriptions/{transcription_id}", response_model=TranscriptionDetail)
+async def get_transcription(transcription_id: int):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM transcriptions WHERE id = ?", (transcription_id,)
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, "Transcrição não encontrada")
+    return _row_to_detail(row)
+
+
+@app.delete("/api/transcriptions/{transcription_id}", status_code=204)
+async def delete_transcription(transcription_id: int):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT filepath, filename FROM transcriptions WHERE id = ?",
+            (transcription_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "Transcrição não encontrada")
+        conn.execute("DELETE FROM transcriptions WHERE id = ?", (transcription_id,))
+
+    # Remove o áudio e quaisquer exports gerados
+    Path(row["filepath"]).unlink(missing_ok=True)
+    stem = Path(row["filepath"]).stem
+    for export in settings.exports_dir.glob(f"{stem}.*"):
+        export.unlink(missing_ok=True)
+    return Response(status_code=204)
+
+
+@app.get("/api/transcriptions/{transcription_id}/export")
+async def export_transcription(transcription_id: int, format: str = Query(...)):
+    if format not in SUPPORTED_FORMATS:
+        raise HTTPException(422, f"Formato inválido. Use: {', '.join(SUPPORTED_FORMATS)}")
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM transcriptions WHERE id = ?", (transcription_id,)
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, "Transcrição não encontrada")
+    if row["status"] != "done":
+        raise HTTPException(409, "Transcrição ainda não concluída")
+
+    content, media_type = export_transcript(
+        row["text"] or "", row["segments_json"], row["language"], format
+    )
+    out_name = f"{Path(row['filename']).stem}.{format}"
+    return Response(
+        content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
+    )
+
+
+@app.get("/api/transcriptions/{transcription_id}/audio")
+async def get_audio(transcription_id: int):
+    """Serve o arquivo de áudio para o player do frontend."""
+    from fastapi.responses import FileResponse
+
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT filepath, filename FROM transcriptions WHERE id = ?",
+            (transcription_id,),
+        ).fetchone()
+    if row is None or not Path(row["filepath"]).is_file():
+        raise HTTPException(404, "Áudio não encontrado")
+    return FileResponse(row["filepath"], filename=row["filename"])
+
+
+@app.websocket("/ws/jobs/{job_id}")
+async def job_progress(websocket: WebSocket, job_id: str):
+    await websocket.accept()
+    job = job_manager.get(job_id)
+    if job is None:
+        await websocket.send_json({"error": "job não encontrado"})
+        await websocket.close()
+        return
+    try:
+        async for snapshot in job_manager.watch(job_id):
+            await websocket.send_json(snapshot)
+    finally:
+        await websocket.close()

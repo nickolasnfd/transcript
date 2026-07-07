@@ -15,9 +15,13 @@ from . import health
 from .config import settings
 from .db import get_conn, init_db
 from .export.writers import SUPPORTED_FORMATS, export_transcript
+from .llm import actions as llm_actions
+from .llm.ollama_client import OllamaOfflineError, list_models
 from .models import (
+    ChatRequest,
     HealthStatus,
     JobCreated,
+    LLMRequest,
     Segment,
     TranscriptionDetail,
     TranscriptionSummary,
@@ -210,6 +214,141 @@ async def get_audio(transcription_id: int):
     if row is None or not Path(row["filepath"]).is_file():
         raise HTTPException(404, "Áudio não encontrado")
     return FileResponse(row["filepath"], filename=row["filename"])
+
+
+# ---------------------------------------------------------------------------
+# LLM (Ollama)
+# ---------------------------------------------------------------------------
+
+def _get_transcript_text(transcription_id: int) -> str:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT text, status FROM transcriptions WHERE id = ?",
+            (transcription_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, "Transcrição não encontrada")
+    if row["status"] != "done" or not row["text"]:
+        raise HTTPException(409, "Transcrição ainda não concluída")
+    return row["text"]
+
+
+def _save_llm_result(transcription_id: int, action: str, model: str | None, output: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO llm_results (transcription_id, action, model, output)"
+            " VALUES (?, ?, ?, ?)",
+            (transcription_id, action, model or settings.ollama_model, output),
+        )
+
+
+def _llm_streaming_response(transcription_id: int, action: str, req: LLMRequest):
+    """Cria uma StreamingResponse para uma ação de template único."""
+    from fastapi.responses import StreamingResponse
+
+    text = _get_transcript_text(transcription_id)
+
+    async def generate():
+        collected: list[str] = []
+        try:
+            async for token in llm_actions.run_action(action, text, req.model):
+                collected.append(token)
+                yield token
+        except OllamaOfflineError as exc:
+            yield f"\n[ERRO] {exc}"
+            return
+        _save_llm_result(transcription_id, action, req.model, "".join(collected))
+
+    return StreamingResponse(generate(), media_type="text/plain; charset=utf-8")
+
+
+@app.get("/api/ollama/models")
+async def get_ollama_models():
+    try:
+        return {"models": await list_models()}
+    except OllamaOfflineError as exc:
+        raise HTTPException(503, f"Ollama indisponível: {exc}")
+
+
+@app.post("/api/transcriptions/{transcription_id}/summary")
+async def llm_summary(transcription_id: int, req: LLMRequest = LLMRequest()):
+    return _llm_streaming_response(transcription_id, "summary", req)
+
+
+@app.post("/api/transcriptions/{transcription_id}/clean")
+async def llm_clean(transcription_id: int, req: LLMRequest = LLMRequest()):
+    return _llm_streaming_response(transcription_id, "clean", req)
+
+
+@app.post("/api/transcriptions/{transcription_id}/action-items")
+async def llm_action_items(transcription_id: int, req: LLMRequest = LLMRequest()):
+    return _llm_streaming_response(transcription_id, "action_items", req)
+
+
+@app.post("/api/transcriptions/{transcription_id}/chat")
+async def llm_chat(transcription_id: int, req: ChatRequest):
+    from fastapi.responses import StreamingResponse
+
+    text = _get_transcript_text(transcription_id)
+    with get_conn() as conn:
+        history = [
+            {"role": r["role"], "content": r["content"]}
+            for r in conn.execute(
+                "SELECT role, content FROM chat_messages"
+                " WHERE transcription_id = ? ORDER BY id",
+                (transcription_id,),
+            )
+        ]
+
+    async def generate():
+        collected: list[str] = []
+        try:
+            async for token in llm_actions.run_chat(text, history, req.message, req.model):
+                collected.append(token)
+                yield token
+        except OllamaOfflineError as exc:
+            yield f"\n[ERRO] {exc}"
+            return
+        answer = "".join(collected)
+        with get_conn() as conn:
+            conn.execute(
+                "INSERT INTO chat_messages (transcription_id, role, content) VALUES (?, 'user', ?)",
+                (transcription_id, req.message),
+            )
+            conn.execute(
+                "INSERT INTO chat_messages (transcription_id, role, content) VALUES (?, 'assistant', ?)",
+                (transcription_id, answer),
+            )
+
+    return StreamingResponse(generate(), media_type="text/plain; charset=utf-8")
+
+
+@app.get("/api/transcriptions/{transcription_id}/chat")
+async def get_chat_history(transcription_id: int):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT role, content, created_at FROM chat_messages"
+            " WHERE transcription_id = ? ORDER BY id",
+            (transcription_id,),
+        ).fetchall()
+    return {"messages": [dict(r) for r in rows]}
+
+
+@app.get("/api/transcriptions/{transcription_id}/llm-results")
+async def get_llm_results(transcription_id: int):
+    """Últimos resultados salvos de cada ação (para reabrir transcripts antigos)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT action, model, output, created_at FROM llm_results
+            WHERE id IN (
+                SELECT MAX(id) FROM llm_results
+                WHERE transcription_id = ? GROUP BY action
+            )
+            """,
+            (transcription_id,),
+        ).fetchall()
+    return {"results": {r["action"]: dict(r) for r in rows}}
 
 
 @app.websocket("/ws/jobs/{job_id}")

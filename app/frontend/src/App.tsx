@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from './api'
+import { LLMPanel } from './components/LLMPanel'
 import { ProgressCard } from './components/ProgressCard'
 import { TranscriptView } from './components/TranscriptView'
 import { UploadCard } from './components/UploadCard'
@@ -57,6 +58,14 @@ export default function App() {
         {job && <ProgressCard job={job} onDone={openTranscription} />}
         {error && <p className="error">{error}</p>}
         {transcript && <TranscriptView transcript={transcript} />}
+        {transcript && transcript.status === 'done' && (
+          <LLMPanel
+            transcriptionId={transcript.id}
+            originalText={transcript.text ?? ''}
+            ollamaOk={health?.ollama.ok ?? false}
+            ollamaDetail={health?.ollama.detail}
+          />
+        )}
       </main>
     </div>
   )

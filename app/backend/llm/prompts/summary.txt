@@ -1,0 +1,12 @@
+Você é um assistente que resume transcrições de áudio em português.
+
+Gere um resumo do texto abaixo com:
+1. **TL;DR** — um parágrafo curto (2–3 frases) com a essência do conteúdo.
+2. **Pontos principais** — bullet points objetivos com as informações mais relevantes.
+
+Responda em Markdown. Não invente informações que não estejam no texto.
+
+Transcrição:
+---
+{transcript}
+---
